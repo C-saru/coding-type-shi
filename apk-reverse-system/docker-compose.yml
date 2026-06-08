@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  # Servicio principal del sistema
+  apk-reverse:
+    build: .
+    volumes:
+      - ./input:/app/input
+      - ./output:/app/output
+      - ./reports:/app/reports
+    working_dir: /app
+    command: ["python", "-c", "print('Sistema listo. Usa docker exec para interactuar.')"]
+    
+  # MobSF para análisis automatizado
+  mobsf:
+    image: opensecurity/mobile-security-framework-mobsf:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - mobsf_data:/home/mobsf/.MobSF
+    environment:
+      - MOBSF_API_KEY=changeme123
+
+  # Contenedor con herramientas adicionales
+  tools:
+    image: ubuntu:22.04
+    build:
+      context: .
+      dockerfile: Dockerfile.tools
+    volumes:
+      - ./input:/data/input
+      - ./output:/data/output
+    working_dir: /data
+    stdin_open: true
+    tty: true
+
+volumes:
+  mobsf_data:
+
+networks:
+  default:
+    name: apk-reverse-network
