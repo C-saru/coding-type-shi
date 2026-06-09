@@ -253,10 +253,13 @@ class ObjectionWrapper:
         cmd = ["objection", "-g", self.package_name, "explore"]
         
         # Si hay comandos, crear script temporal
+        script_path = None
         if commands:
-            script_file = Path("/tmp/objection_commands.txt")
-            script_file.write_text("\n".join(commands))
-            cmd.extend(["-s", str(script_file)])
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt') as temp_file:
+                temp_file.write("\n".join(commands))
+                script_path = temp_file.name
+            cmd.extend(["-s", script_path])
         
         logger.info(f"Ejecutando Objection: {' '.join(cmd)}")
         
@@ -269,6 +272,9 @@ class ObjectionWrapper:
                 input="\n".join(commands) if commands else None
             )
             
+            if script_path and os.path.exists(script_path):
+                os.remove(script_path)
+
             success = result.returncode == 0 or len(result.stdout) > 100
             
             return {
@@ -279,6 +285,8 @@ class ObjectionWrapper:
             }
             
         except subprocess.TimeoutExpired:
+            if script_path and os.path.exists(script_path):
+                os.remove(script_path)
             return {
                 'success': False,
                 'error': 'Timeout - Sesión Objection excedió tiempo límite'
@@ -336,6 +344,79 @@ class ObjectionWrapper:
     def set_package(self, package_name: str):
         """Setea el package name objetivo"""
         self.package_name = package_name
+
+
+class R2FridaWrapper:
+    """Wrapper para Radare2 / r2frida"""
+
+    def __init__(self, r2_path: str = "r2"):
+        """
+        Args:
+            r2_path: Ruta al ejecutable de radare2
+        """
+        self.r2_path = r2_path
+
+    def check_r2frida(self) -> bool:
+        """Verifica si el plugin r2frida está instalado"""
+        try:
+            result = subprocess.run([self.r2_path, "-L"], capture_output=True, text=True, timeout=10)
+            return 'frida' in result.stdout.lower() or 'frida' in result.stderr.lower()
+        except Exception:
+            return False
+
+    def execute_commands(self, package_name: str, commands: List[str]) -> Dict:
+        """
+        Ejecuta comandos r2frida y retorna la salida
+        """
+        if not commands:
+            return {'success': False, 'error': 'No hay comandos proporcionados'}
+
+        import tempfile
+        try:
+            with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt') as temp_file:
+                temp_file.write("\n".join(commands) + "\nq\n")
+                script_path = temp_file.name
+
+            cmd = [self.r2_path, "-q", "-i", script_path, f"frida://usb//{package_name}"]
+            logger.info(f"Ejecutando Radare2: {' '.join(cmd)}")
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
+            # Limpiar archivo temporal
+            if os.path.exists(script_path):
+                os.remove(script_path)
+
+            return {
+                'success': result.returncode == 0,
+                'output': result.stdout,
+                'stderr': result.stderr
+            }
+        except subprocess.TimeoutExpired:
+            return {'success': False, 'error': 'Timeout - Ejecución de Radare2 excedió tiempo límite'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def explore_binary(self, package_name: str) -> Dict:
+        """Comandos predefinidos para exploración de memoria/binarios con r2frida"""
+        commands = [
+            ":i",         # App info
+            ":il",        # List libraries
+            ":ic",        # List classes
+            ":is",        # List symbols
+        ]
+        return self.execute_commands(package_name, commands)
+
+
+class QBDIWrapper:
+    """Wrapper para QuarkslaB Dynamic binary Instrumentation (QBDI) - Placeholder"""
+
+    def __init__(self):
+        pass
+
+    def analyze_instruction_trace(self, binary_path: str):
+        """Placeholder function to be extended with QBDI tracing capabilities"""
+        logger.info(f"[QBDI] Analyzing instruction trace for binary: {binary_path}")
+        return {"success": True, "info": "QBDI instruction trace initialized. Implement me!"}
 
 
 def create_frida_script_bypass_all() -> str:

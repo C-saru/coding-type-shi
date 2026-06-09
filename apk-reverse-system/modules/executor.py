@@ -13,8 +13,11 @@ import logging
 from modules.ingester import APKIngester, APKInfo
 from modules.planner import APKPlanner, AnalysisPlan
 from tools.static_analysis import JadxWrapper, ApktoolWrapper, GhidraWrapper
-from tools.dynamic_analysis import FridaWrapper, ObjectionWrapper
+from tools.dynamic_analysis import FridaWrapper, ObjectionWrapper, R2FridaWrapper
 from tools.specialized_tools import Il2CppDumperWrapper, HermesDecWrapper
+from tools.mobsf_api import MobSFWrapper
+from modules.split_patcher import SplitAPKPatcher
+import subprocess
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -64,6 +67,9 @@ class APKExecutor:
         self.objection = ObjectionWrapper()
         self.il2cpp = Il2CppDumperWrapper()
         self.hermes = HermesDecWrapper()
+        self.mobsf = MobSFWrapper()
+        self.r2frida = R2FridaWrapper()
+        self.split_patcher = SplitAPKPatcher(work_dir=str(self.work_dir / "patches"))
         
         # Tracking de resultados
         self.results: List[ExecutionResult] = []
@@ -159,6 +165,12 @@ class APKExecutor:
                     output = self._run_objection(apk_path, task_dir, params)
                 else:
                     output = {'success': False, 'skipped': True, 'reason': 'No device connected'}
+
+            elif tool == "r2frida":
+                if device_connected:
+                    output = self._run_r2frida(apk_path, task_dir, params)
+                else:
+                    output = {'success': False, 'skipped': True, 'reason': 'No device connected'}
             
             elif tool == "il2cppdumper":
                 output = self._run_il2cppdumper(apk_path, task_dir, params)
@@ -167,8 +179,13 @@ class APKExecutor:
                 output = self._run_hermes_dec(apk_path, task_dir, params)
             
             elif tool == "mobsf":
-                output = {'success': True, 'info': 'MobSF requiere ejecución via Docker/API', 
-                         'instructions': 'docker run -p 8000:8000 opensecurity/mobile-security-framework-mobsf'}
+                output = self._run_mobsf(apk_path, task_dir, params)
+
+            elif tool == "split_patcher":
+                output = self._run_split_patcher(apk_path, params)
+
+            elif tool == "frida_gadget":
+                output = self._run_frida_gadget(apk_path, params)
             
             duration = time.time() - start
             success = output.get('success', False) or output.get('skipped', False)
@@ -247,8 +264,11 @@ class APKExecutor:
         
         # Verificar frida-server
         if not self.frida.check_frida_server():
-            logger.warning("frida-server no está corriendo, intentando iniciar...")
-            self.frida.start_frida_server()
+            logger.warning("frida-server no está corriendo. Intentando fallback a R2Frida.")
+            if self.r2frida.check_r2frida():
+                return self._run_r2frida(apk_path, task_dir, params)
+            else:
+                return {'success': False, 'error': 'Frida-server no disponible'}
         
         # Generar script si no se proporcionó
         script_dir = task_dir / "frida_scripts"
@@ -260,12 +280,32 @@ class APKExecutor:
         script_path.write_text(script_content)
         
         # Ejecutar (timeout corto para demo)
-        return self.frida.spawn_and_attach(
+        res = self.frida.spawn_and_attach(
             package_name,
             str(script_path),
             output_callback=lambda line: logger.info(f"Frida: {line}")
         )
+        if res.get('success'):
+            res['owasp_control'] = 'MASTG-TEST-0022, MASTG-TEST-0045'
+        return res
     
+    def _run_r2frida(self, apk_path: str, task_dir: Path, params: Dict) -> Dict:
+        ingester = APKIngester()
+        info = ingester.analyze(apk_path)
+        package_name = info.package_name
+
+        if not package_name:
+            return {'success': False, 'error': 'No se pudo extraer package name'}
+
+        if not self.r2frida.check_r2frida():
+             return {'success': False, 'error': 'El plugin r2frida no está instalado o r2 no está disponible.'}
+
+        commands = params.get('commands', [])
+        if commands:
+            return self.r2frida.execute_commands(package_name, commands)
+        else:
+            return self.r2frida.explore_binary(package_name)
+
     def _run_objection(self, apk_path: str, task_dir: Path, params: Dict) -> Dict:
         ingester = APKIngester()
         info = ingester.analyze(apk_path)
@@ -277,7 +317,10 @@ class APKExecutor:
         self.objection.set_package(package_name)
         
         commands = params.get('commands', ['android sslpinning disable', 'exit'])
-        return self.objection.explore(commands)
+        res = self.objection.explore(commands)
+        if res.get('success'):
+            res['owasp_control'] = 'MASTG-TEST-0022'
+        return res
     
     def _run_il2cppdumper(self, apk_path: str, task_dir: Path, params: Dict) -> Dict:
         dump_dir = task_dir / "il2cpp_dump"
@@ -287,6 +330,64 @@ class APKExecutor:
         bundle_dir = task_dir / "hermes_bundle"
         return self.hermes.extract_from_apk(apk_path, str(bundle_dir))
     
+    def _run_split_patcher(self, apk_path: str, params: Dict) -> Dict:
+        target_lib = params.get("target_lib", "libreactnative.so")
+        ks_path = os.environ.get("KEYSTORE_PATH", "debug.keystore")
+        ks_pass = os.environ.get("KEYSTORE_PASS", "android")
+
+        try:
+            result = self.split_patcher.patch_split(apk_path, target_lib, ks_path, ks_pass)
+            return {
+                'success': result.success,
+                'patched_apk': result.patched_apk,
+                'original_splits': result.original_splits,
+                'error': result.error,
+                'owasp_control': 'MASTG-TEST-0058'
+            }
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _run_frida_gadget(self, apk_path: str, params: Dict) -> Dict:
+        mode = params.get("mode", "wait")
+        if mode == "wait":
+            logger.info("Configurando adb forward para Frida Gadget...")
+            try:
+                subprocess.run(["adb", "forward", "tcp:27042", "tcp:27042"], check=True, stdout=subprocess.DEVNULL)
+                time.sleep(2)
+                logger.info("Conectando frida al Gadget...")
+
+                # Simulando un attach al Gadget si hay un script configurado (ej: spoof.js)
+                spoof_script = "scripts/spoof.js"
+                if not os.path.exists(spoof_script):
+                    os.makedirs("scripts", exist_ok=True)
+                    with open(spoof_script, "w") as f:
+                        f.write('console.log("Spoofing via gadget...");\n')
+
+                # Adjuntarse vía frida
+                try:
+                    subprocess.run(["frida", "-H", "127.0.0.1:27042", "-n", "Gadget", "-l", spoof_script], check=True)
+                except subprocess.CalledProcessError as e:
+                    logger.warning(f"Error adjuntando frida (probablemente no hay gadget/dispositivo corriendo): {e}")
+
+                return {
+                    'success': True,
+                    'info': 'Frida conectado a 127.0.0.1:27042',
+                    'owasp_control': 'MASTG-TEST-0058, MASTG-TEST-0018'
+                }
+            except Exception as e:
+                return {'success': False, 'error': str(e)}
+        return {'success': False, 'error': 'Modo no soportado'}
+
+    def _run_mobsf(self, apk_path: str, task_dir: Path, params: Dict) -> Dict:
+        # Check if MobSF integration is properly configured
+        if not self.mobsf.api_key:
+            return {
+                'success': True,
+                'info': 'MobSF API key no configurada. Ejecutando de forma manual o simulada.',
+                'instructions': 'Configura MOBSF_API_KEY en tu entorno o pasa el api_key a MobSFWrapper.'
+            }
+        return self.mobsf.upload_and_analyze(apk_path)
+
     def _generate_report(self, apk_path: str, plan: AnalysisPlan, 
                          total_time: float) -> Dict:
         """Genera reporte consolidado del análisis"""

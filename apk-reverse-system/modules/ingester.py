@@ -31,6 +31,9 @@ class APKInfo(BaseModel):
     has_native_libs: bool = False
     has_unity_libs: bool = False
     has_react_native: bool = False
+    is_split_apk: bool = False
+    extract_native_libs: bool = True
+    root_available: bool = False  # Placeholder, typically resolved dynamically
     error_message: Optional[str] = None
 
 
@@ -54,13 +57,13 @@ class APKIngester:
             return False, f"El archivo no existe: {file_path}"
         
         # Verificar extensión
-        if path.suffix.lower() != '.apk':
-            return False, f"Extensión inválida: {path.suffix}. Se espera .apk"
+        if path.suffix.lower() not in ['.apk', '.ipa']:
+            return False, f"Extensión inválida: {path.suffix}. Se espera .apk o .ipa"
         
         # Verificar tipo MIME
         try:
             mime = magic.from_file(str(path), mime=True)
-            if mime not in ['application/vnd.android.package-archive', 'application/zip', 'application/octet-stream']:
+            if mime not in ['application/vnd.android.package-archive', 'application/x-ios-app', 'application/zip', 'application/octet-stream']:
                 return False, f"Tipo MIME inválido: {mime}"
         except Exception as e:
             return False, f"Error al verificar tipo MIME: {str(e)}"
@@ -68,16 +71,17 @@ class APKIngester:
         # Verificar estructura ZIP
         try:
             with zipfile.ZipFile(path, 'r') as zf:
-                # Verificar archivos esenciales
-                required_files = ['AndroidManifest.xml']
+                # Verificar archivos esenciales según plataforma
                 namelist = zf.namelist()
                 
-                for req in required_files:
-                    if req not in namelist:
-                        return False, f"Archivo esencial faltante: {req}"
+                is_apk = any(n == 'AndroidManifest.xml' for n in namelist)
+                is_ipa = any('Payload/' in n and n.endswith('.app/Info.plist') for n in namelist)
+
+                if not is_apk and not is_ipa:
+                    return False, f"Archivo esencial faltante: AndroidManifest.xml o Info.plist"
                         
         except zipfile.BadZipFile:
-            return False, "El archivo no es un ZIP válido (APK corrupto)"
+            return False, "El archivo no es un ZIP válido (APK/IPA corrupto)"
         except Exception as e:
             return False, f"Error al leer ZIP: {str(e)}"
         
@@ -99,14 +103,36 @@ class APKIngester:
         }
     
     def extract_manifest_info(self, file_path: str) -> Dict:
-        """Extrae información del AndroidManifest.xml"""
+        """Extrae información del AndroidManifest.xml o Info.plist"""
         info = {}
         
+        is_ios = str(file_path).lower().endswith('.ipa')
+
+        if is_ios:
+            import plistlib
+            try:
+                with zipfile.ZipFile(file_path, 'r') as zf:
+                    namelist = zf.namelist()
+                    plist_path = next((n for n in namelist if 'Payload/' in n and n.endswith('.app/Info.plist')), None)
+                    if plist_path:
+                        plist_data = zf.read(plist_path)
+                        try:
+                            plist = plistlib.loads(plist_data)
+                            info['package_name'] = plist.get('CFBundleIdentifier')
+                            info['version_name'] = plist.get('CFBundleShortVersionString')
+                            info['version_code'] = plist.get('CFBundleVersion')
+                            info['app_name'] = plist.get('CFBundleName') or plist.get('CFBundleDisplayName')
+                            info['min_sdk'] = plist.get('MinimumOSVersion')
+                            info['target_sdk'] = None
+                            info['permissions'] = [k for k in plist.keys() if k.startswith('NS') and k.endswith('UsageDescription')]
+                        except Exception as e:
+                            info['error'] = f"Error al parsear Info.plist: {e}"
+            except Exception as e:
+                info['error'] = str(e)
+            return info
+
         try:
             with zipfile.ZipFile(file_path, 'r') as zf:
-                # Leer AndroidManifest.xml binario
-                manifest_data = zf.read('AndroidManifest.xml')
-                
                 # Intentar parsear (androguard lo maneja mejor)
                 try:
                     from androguard.core.bytecodes.apk import APK
@@ -120,6 +146,15 @@ class APKIngester:
                     info['app_name'] = apk.get_app_name()
                     info['permissions'] = apk.get_permissions()
                     
+                    # Extraer extractNativeLibs
+                    manifest_xml = apk.get_android_manifest_xml()
+                    if manifest_xml is not None:
+                        app_elem = manifest_xml.find("application")
+                        if app_elem is not None:
+                            ns = "{http://schemas.android.com/apk/res/android}"
+                            extract = app_elem.get(f"{ns}extractNativeLibs", "true")
+                            info['extract_native_libs'] = extract.lower() == "true"
+
                 except ImportError:
                     # Fallback básico sin androguard
                     pass
@@ -216,6 +251,9 @@ class APKIngester:
         # Detectar características
         features = self.detect_features(file_path)
         
+        # Detectar splits
+        is_split = any(p.name.startswith("split_config") for p in Path(file_path).parent.glob("*.apk"))
+
         # Construir resultado
         return APKInfo(
             file_path=file_path,
@@ -233,6 +271,9 @@ class APKIngester:
             has_native_libs=features['has_native_libs'],
             has_unity_libs=features['has_unity_libs'],
             has_react_native=features['has_react_native'],
+            is_split_apk=is_split,
+            extract_native_libs=manifest_info.get('extract_native_libs', True),
+            root_available=False,
             error_message=None
         )
     
