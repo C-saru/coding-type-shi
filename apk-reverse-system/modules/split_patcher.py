@@ -89,8 +89,29 @@ class SplitAPKPatcher:
             config_path.write_text('{\n  "interaction": {\n    "type": "script",\n    "path": "libstealth.so"\n  }\n}')
 
             stealth_path = lib_dir / "libstealth.so"
-            # Stealth JS simulado
-            stealth_path.write_text('console.log("Stealth script running...");\n')
+            stealth_js_content = """
+// Evasión RASP: Cegado de /proc/self/maps (FrihDah Cap. 5.2)
+Interceptor.attach(Module.findExportByName("libc.so", "open"), {
+    onEnter: function(args) {
+        this.path = Memory.readCString(args[0]);
+        if (this.path !== null && this.path.indexOf("/proc/self/maps") !== -1) {
+            this.is_target = true;
+        } else {
+            this.is_target = false;
+        }
+    },
+    onLeave: function(retval) {
+        if (this.is_target) {
+            retval.replace(-1); // Forzar error de archivo no encontrado
+            var errno = Memory.alloc(4);
+            errno.writeInt(13); // 13 = EACCES (Permission Denied)
+            Module.findExportByName("libc.so", "__errno")().writePointer(errno);
+        }
+    }
+});
+console.log("[*] RASP Evasion: /proc/self/maps hooked successfully.");
+"""
+            stealth_path.write_text(stealth_js_content)
 
             # 3. Reempaquetado Crítico (zip -0)
             repacked_apk = task_dir / "split_repacked.apk"
