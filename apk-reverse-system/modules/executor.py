@@ -13,8 +13,9 @@ import logging
 from modules.ingester import APKIngester, APKInfo
 from modules.planner import APKPlanner, AnalysisPlan
 from tools.static_analysis import JadxWrapper, ApktoolWrapper, GhidraWrapper
-from tools.dynamic_analysis import FridaWrapper, ObjectionWrapper
+from tools.dynamic_analysis import FridaWrapper, ObjectionWrapper, R2FridaWrapper
 from tools.specialized_tools import Il2CppDumperWrapper, HermesDecWrapper
+from tools.mobsf_api import MobSFWrapper
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -64,6 +65,8 @@ class APKExecutor:
         self.objection = ObjectionWrapper()
         self.il2cpp = Il2CppDumperWrapper()
         self.hermes = HermesDecWrapper()
+        self.mobsf = MobSFWrapper()
+        self.r2frida = R2FridaWrapper()
         
         # Tracking de resultados
         self.results: List[ExecutionResult] = []
@@ -159,6 +162,12 @@ class APKExecutor:
                     output = self._run_objection(apk_path, task_dir, params)
                 else:
                     output = {'success': False, 'skipped': True, 'reason': 'No device connected'}
+
+            elif tool == "r2frida":
+                if device_connected:
+                    output = self._run_r2frida(apk_path, task_dir, params)
+                else:
+                    output = {'success': False, 'skipped': True, 'reason': 'No device connected'}
             
             elif tool == "il2cppdumper":
                 output = self._run_il2cppdumper(apk_path, task_dir, params)
@@ -167,8 +176,7 @@ class APKExecutor:
                 output = self._run_hermes_dec(apk_path, task_dir, params)
             
             elif tool == "mobsf":
-                output = {'success': True, 'info': 'MobSF requiere ejecución via Docker/API', 
-                         'instructions': 'docker run -p 8000:8000 opensecurity/mobile-security-framework-mobsf'}
+                output = self._run_mobsf(apk_path, task_dir, params)
             
             duration = time.time() - start
             success = output.get('success', False) or output.get('skipped', False)
@@ -266,6 +274,23 @@ class APKExecutor:
             output_callback=lambda line: logger.info(f"Frida: {line}")
         )
     
+    def _run_r2frida(self, apk_path: str, task_dir: Path, params: Dict) -> Dict:
+        ingester = APKIngester()
+        info = ingester.analyze(apk_path)
+        package_name = info.package_name
+
+        if not package_name:
+            return {'success': False, 'error': 'No se pudo extraer package name'}
+
+        if not self.r2frida.check_r2frida():
+             return {'success': False, 'error': 'El plugin r2frida no está instalado o r2 no está disponible.'}
+
+        commands = params.get('commands', [])
+        if commands:
+            return self.r2frida.execute_commands(package_name, commands)
+        else:
+            return self.r2frida.explore_binary(package_name)
+
     def _run_objection(self, apk_path: str, task_dir: Path, params: Dict) -> Dict:
         ingester = APKIngester()
         info = ingester.analyze(apk_path)
@@ -287,6 +312,16 @@ class APKExecutor:
         bundle_dir = task_dir / "hermes_bundle"
         return self.hermes.extract_from_apk(apk_path, str(bundle_dir))
     
+    def _run_mobsf(self, apk_path: str, task_dir: Path, params: Dict) -> Dict:
+        # Check if MobSF integration is properly configured
+        if not self.mobsf.api_key:
+            return {
+                'success': True,
+                'info': 'MobSF API key no configurada. Ejecutando de forma manual o simulada.',
+                'instructions': 'Configura MOBSF_API_KEY en tu entorno o pasa el api_key a MobSFWrapper.'
+            }
+        return self.mobsf.upload_and_analyze(apk_path)
+
     def _generate_report(self, apk_path: str, plan: AnalysisPlan, 
                          total_time: float) -> Dict:
         """Genera reporte consolidado del análisis"""

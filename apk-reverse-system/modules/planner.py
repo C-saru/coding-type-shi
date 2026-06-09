@@ -36,13 +36,13 @@ class APKPlanner:
     # Mapeo de características a herramientas recomendadas
     TOOL_MAPPING = {
         'standard': ['jadx', 'apktool'],
-        'native_libs': ['ghidra', 'radare2'],
+        'native_libs': ['ghidra', 'r2frida'],
         'unity': ['il2cppdumper', 'ghidra'],
         'react_native': ['hermes-dec', 'frida'],
         'flutter': ['frida', 'dart_analyzer'],
         'xamarin': ['dnSpy', 'ilspy'],
         'high_security': ['frida', 'objection', 'burp'],
-        'malware_suspect': ['mobsf', 'jadx', 'apktool', 'virustotal']
+        'malware_suspect': ['mobsf', 'jadx', 'apktool', 'r2frida']
     }
     
     def __init__(self):
@@ -122,7 +122,14 @@ class APKPlanner:
                 parameters={"auto_analyze": True, "find_strings": True},
                 estimated_time="15-60 min"
             ))
-            recommended_tools.add('ghidra')
+            tasks.append(AnalysisTask(
+                tool="r2frida",
+                description="Exploración dinámica en memoria de las librerías cargadas",
+                priority=3,
+                parameters={"commands": [":il", ":is"]},
+                estimated_time="5-10 min"
+            ))
+            recommended_tools.update(['ghidra', 'r2frida'])
         
         # Verificar permisos sensibles para determinar nivel de seguridad
         high_risk_permissions = [
@@ -179,14 +186,17 @@ class APKPlanner:
             ))
             recommended_tools.update(['frida', 'objection'])
         
-        # Análisis de malware potencial (heurística básica)
-        malware_indicators = [
-            len(risky_perms) >= 5,
-            apk_info.has_native_libs and len(risky_perms) >= 3,
-            has_protections and len(risky_perms) >= 4
-        ]
+        # Análisis de malware potencial (heurística mejorada)
+        malware_indicators = 0
+        if len(risky_perms) >= 5: malware_indicators += 1
+        if apk_info.has_native_libs and len(risky_perms) >= 3: malware_indicators += 1
+        if has_protections and len(risky_perms) >= 4: malware_indicators += 1
+
+        suspicious_names = ['payload', 'dropper', 'update', 'install']
+        if apk_info.package_name and any(sn in apk_info.package_name.lower() for sn in suspicious_names):
+            malware_indicators += 2
         
-        if sum(malware_indicators) >= 2:
+        if malware_indicators >= 2:
             considerations.append("⚠️ POSIBLE MALWARE - Se recomienda análisis profundo con MobSF")
             tasks.insert(0, AnalysisTask(
                 tool="mobsf",
