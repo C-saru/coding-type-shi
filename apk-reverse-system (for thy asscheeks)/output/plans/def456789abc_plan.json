@@ -1,0 +1,68 @@
+{
+  "apk_hash": "def456789abc",
+  "package_name": "com.example.app",
+  "total_tasks": 5,
+  "tasks": [
+    {
+      "tool": "jadx",
+      "description": "Decompilar DEX a c\u00f3digo Java legible",
+      "priority": 1,
+      "parameters": {
+        "output_format": "java",
+        "include_resources": false
+      },
+      "estimated_time": "2-5 min"
+    },
+    {
+      "tool": "apktool",
+      "description": "Decodear resources.arsc y AndroidManifest.xml",
+      "priority": 1,
+      "parameters": {
+        "no_src": true,
+        "force": true
+      },
+      "estimated_time": "1-3 min"
+    },
+    {
+      "tool": "hermes-dec",
+      "description": "Decompilar bytecode Hermes si est\u00e1 presente",
+      "priority": 2,
+      "parameters": {
+        "bytecode_path": "assets/index.android.bundle"
+      },
+      "estimated_time": "2-5 min"
+    },
+    {
+      "tool": "ghidra",
+      "description": "An\u00e1lisis reverse de librer\u00edas nativas",
+      "priority": 2,
+      "parameters": {
+        "auto_analyze": true,
+        "find_strings": true
+      },
+      "estimated_time": "15-60 min"
+    },
+    {
+      "tool": "frida",
+      "description": "Instrumentaci\u00f3n para explorar bridge React Native",
+      "priority": 3,
+      "parameters": {
+        "scripts": [
+          "react-native-tracer.js"
+        ]
+      },
+      "estimated_time": "15-30 min"
+    }
+  ],
+  "recommended_tools": [
+    "hermes-dec",
+    "jadx",
+    "apktool",
+    "frida",
+    "ghidra"
+  ],
+  "special_considerations": [
+    "React Native detectado - bytecode Hermes puede estar presente",
+    "Librer\u00edas nativas (.so) detectadas - an\u00e1lisis binario requerido"
+  ]
+}
