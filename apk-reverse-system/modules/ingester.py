@@ -31,6 +31,9 @@ class APKInfo(BaseModel):
     has_native_libs: bool = False
     has_unity_libs: bool = False
     has_react_native: bool = False
+    is_split_apk: bool = False
+    extract_native_libs: bool = True
+    root_available: bool = False  # Placeholder, typically resolved dynamically 
     error_message: Optional[str] = None
 
 
@@ -73,7 +76,7 @@ class APKIngester:
                 
                 is_apk = any(n == 'AndroidManifest.xml' for n in namelist)
                 is_ipa = any('Payload/' in n and n.endswith('.app/Info.plist') for n in namelist)
-
+                
                 if not is_apk and not is_ipa:
                     return False, f"Archivo esencial faltante: AndroidManifest.xml o Info.plist"
                         
@@ -104,7 +107,7 @@ class APKIngester:
         info = {}
         
         is_ios = str(file_path).lower().endswith('.ipa')
-
+        
         if is_ios:
             import plistlib
             try:
@@ -143,9 +146,18 @@ class APKIngester:
                     info['app_name'] = apk.get_app_name()
                     info['permissions'] = apk.get_permissions()
                     
-                except ImportError:
-                    # Fallback básico sin androguard
-                    pass
+                    # Extraer extractNativeLibs
+                    manifest_xml = apk.get_android_manifest_xml()
+                    if manifest_xml is not None:
+                        app_elem = manifest_xml.find("application")
+                        if app_elem is not None:
+                            ns = "{http://schemas.android.com/apk/res/android}"
+                            extract = app_elem.get(f"{ns}extractNativeLibs", "true")
+                            info['extract_native_libs'] = extract.lower() == "true"
+                    
+                except ImportError as e:
+                    logger.error("Error crítico de importación: la librería 'androguard' es obligatoria para la extracción de metadatos.")
+                    raise e
                     
         except Exception as e:
             info['error'] = str(e)
@@ -239,6 +251,9 @@ class APKIngester:
         # Detectar características
         features = self.detect_features(file_path)
         
+        # Detectar splits
+        is_split = any(p.name.startswith("split_config") for p in Path(file_path).parent.glob("*.apk"))
+        
         # Construir resultado
         return APKInfo(
             file_path=file_path,
@@ -256,6 +271,9 @@ class APKIngester:
             has_native_libs=features['has_native_libs'],
             has_unity_libs=features['has_unity_libs'],
             has_react_native=features['has_react_native'],
+            is_split_apk=is_split,
+            extract_native_libs=manifest_info.get('extract_native_libs', True),
+            root_available=False,
             error_message=None
         )
     

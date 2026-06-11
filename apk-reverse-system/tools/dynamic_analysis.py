@@ -274,7 +274,7 @@ class ObjectionWrapper:
             
             if script_path and os.path.exists(script_path):
                 os.remove(script_path)
-
+            
             success = result.returncode == 0 or len(result.stdout) > 100
             
             return {
@@ -348,14 +348,14 @@ class ObjectionWrapper:
 
 class R2FridaWrapper:
     """Wrapper para Radare2 / r2frida"""
-
+    
     def __init__(self, r2_path: str = "r2"):
         """
         Args:
             r2_path: Ruta al ejecutable de radare2
         """
         self.r2_path = r2_path
-
+        
     def check_r2frida(self) -> bool:
         """Verifica si el plugin r2frida está instalado"""
         try:
@@ -370,22 +370,22 @@ class R2FridaWrapper:
         """
         if not commands:
             return {'success': False, 'error': 'No hay comandos proporcionados'}
-
+            
         import tempfile
         try:
             with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt') as temp_file:
                 temp_file.write("\n".join(commands) + "\nq\n")
                 script_path = temp_file.name
-
+                
             cmd = [self.r2_path, "-q", "-i", script_path, f"frida://usb//{package_name}"]
             logger.info(f"Ejecutando Radare2: {' '.join(cmd)}")
-
+            
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-
+            
             # Limpiar archivo temporal
             if os.path.exists(script_path):
                 os.remove(script_path)
-
+                
             return {
                 'success': result.returncode == 0,
                 'output': result.stdout,
@@ -405,6 +405,18 @@ class R2FridaWrapper:
             ":is",        # List symbols
         ]
         return self.execute_commands(package_name, commands)
+
+
+class QBDIWrapper:
+    """Wrapper para QuarkslaB Dynamic binary Instrumentation (QBDI) - Placeholder"""
+    
+    def __init__(self):
+        pass
+
+    def analyze_instruction_trace(self, binary_path: str):
+        """Placeholder function to be extended with QBDI tracing capabilities"""
+        logger.info(f"[QBDI] Analyzing instruction trace for binary: {binary_path}")
+        return {"success": True, "info": "QBDI instruction trace initialized. Implement me!"}
 
 
 def create_frida_script_bypass_all() -> str:

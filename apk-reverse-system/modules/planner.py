@@ -51,30 +51,13 @@ class APKPlanner:
     
     def create_plan(self, apk_info) -> AnalysisPlan:
         """
-        Crea un plan de análisis basado en la información del APK
+        Crea un plan de análisis basado en la información del APK usando un Árbol de Decisión Dinámico.
+        [INFO] Para futuras extensiones con Dexcalibur (Generación Dinámica de Hooks), se debe insertar
+        la evaluación heurística de Dexcalibur inmediatamente después de Frida si se detecta ofuscación.
         """
         tasks = []
         recommended_tools = set()
         considerations = []
-        
-        # Análisis estático básico (siempre se realiza)
-        tasks.append(AnalysisTask(
-            tool="jadx",
-            description="Decompilar DEX a código Java legible",
-            priority=1,
-            parameters={"output_format": "java", "include_resources": False},
-            estimated_time="2-5 min"
-        ))
-        
-        tasks.append(AnalysisTask(
-            tool="apktool",
-            description="Decodear resources.arsc y AndroidManifest.xml",
-            priority=1,
-            parameters={"no_src": True, "force": True},
-            estimated_time="1-3 min"
-        ))
-        
-        recommended_tools.update(['jadx', 'apktool'])
         
         # Detectar tipo de aplicación y agregar tareas específicas
         if apk_info.has_unity_libs:
@@ -112,111 +95,27 @@ class APKPlanner:
                 estimated_time="15-30 min"
             ))
             recommended_tools.update(['hermes-dec', 'frida'])
+            
+            if apk_info.is_split_apk:
+                considerations.append("Split APKs (AAB) detected. Applying SplitAPKPatcher.")
+                tasks.append(AnalysisTask(tool="split_patcher", description="Patch split APK via ELF injection", priority=2, parameters={"target_lib": "libreactnative.so", "mode": "script_wait"}))
+                recommended_tools.add('split_patcher')
+                
+        if getattr(apk_info, 'has_flutter', False):
+            considerations.append("Flutter Framework detected.")
+            tasks.append(AnalysisTask(tool="flutter_dump", description="Dump Flutter app", priority=1, parameters={"target": "libapp.so"}))
+            recommended_tools.add('flutter_dump')
+        # Análisis estático básico (siempre se realiza)
+        considerations.append("Standard Android Application components detected.")
+        tasks.append(AnalysisTask(tool="jadx", description="Decompile DEX to Java", priority=1))
+        tasks.append(AnalysisTask(tool="apktool", description="Decode resources", priority=2))
+        recommended_tools.update(['jadx', 'apktool'])
         
-        if apk_info.has_native_libs:
-            considerations.append("Librerías nativas (.so) detectadas - análisis binario requerido")
-            tasks.append(AnalysisTask(
-                tool="ghidra",
-                description="Análisis reverse de librerías nativas",
-                priority=2,
-                parameters={"auto_analyze": True, "find_strings": True},
-                estimated_time="15-60 min"
-            ))
-            tasks.append(AnalysisTask(
-                tool="r2frida",
-                description="Exploración dinámica en memoria de las librerías cargadas",
-                priority=3,
-                parameters={"commands": [":il", ":is"]},
-                estimated_time="5-10 min"
-            ))
-            recommended_tools.update(['ghidra', 'r2frida'])
-        
-        # Verificar permisos sensibles para determinar nivel de seguridad
-        high_risk_permissions = [
-            'android.permission.CAMERA',
-            'android.permission.RECORD_AUDIO',
-            'android.permission.READ_CONTACTS',
-            'android.permission.ACCESS_FINE_LOCATION',
-            'android.permission.READ_SMS',
-            'android.permission.RECEIVE_SMS'
-        ]
-        
-        risky_perms = [p for p in apk_info.permissions if p in high_risk_permissions]
-        if len(risky_perms) >= 3:
-            considerations.append(f"Múltiples permisos sensibles detectados ({len(risky_perms)})")
-            tasks.append(AnalysisTask(
-                tool="objection",
-                description="Exploración runtime y bypass de protecciones",
-                priority=2,
-                parameters={"explore": True, "ssl_unpin": True},
-                estimated_time="10-20 min"
-            ))
-            recommended_tools.add('objection')
-        
-        # Detectar posibles protecciones anti-reverse
-        protection_indicators = [
-            'com.secure',
-            'protect',
-            'anti.debug',
-            'tamper',
-            'obfusc'
-        ]
-        
-        has_protections = any(
-            ind in cls.lower() 
-            for cls in (apk_info.permissions or [])
-            for ind in protection_indicators
-        )
-        
-        if has_protections or apk_info.package_name and ('secure' in apk_info.package_name.lower()):
-            considerations.append("Posibles protecciones anti-reverse detectadas")
-            tasks.append(AnalysisTask(
-                tool="frida",
-                description="Bypass de detección de root/debug/SSL pinning",
-                priority=1,
-                parameters={"scripts": ["bypass_all.js"]},
-                estimated_time="10-30 min"
-            ))
-            tasks.append(AnalysisTask(
-                tool="objection",
-                description="Automatizar bypass de protecciones comunes",
-                priority=2,
-                parameters={"commands": ["android sslpinning disable", "android root disable"]},
-                estimated_time="5-15 min"
-            ))
-            recommended_tools.update(['frida', 'objection'])
-        
-        # Análisis de malware potencial (heurística mejorada)
-        malware_indicators = 0
-        if len(risky_perms) >= 5: malware_indicators += 1
-        if apk_info.has_native_libs and len(risky_perms) >= 3: malware_indicators += 1
-        if has_protections and len(risky_perms) >= 4: malware_indicators += 1
-
-        suspicious_names = ['payload', 'dropper', 'update', 'install']
-        if apk_info.package_name and any(sn in apk_info.package_name.lower() for sn in suspicious_names):
-            malware_indicators += 2
-        
-        if malware_indicators >= 2:
-            considerations.append("⚠️ POSIBLE MALWARE - Se recomienda análisis profundo con MobSF")
-            tasks.insert(0, AnalysisTask(
-                tool="mobsf",
-                description="Análisis automatizado completo estático y dinámico",
-                priority=1,
-                parameters={"scan_type": "full", "include_dynamic": True},
-                estimated_time="30-60 min"
-            ))
-            recommended_tools.add('mobsf')
-        
-        # Agregar análisis dinámico recomendado si hay muchas protecciones
-        if len(considerations) >= 3:
-            tasks.append(AnalysisTask(
-                tool="frida",
-                description="Instrumentación dinámica para análisis de comportamiento",
-                priority=3,
-                parameters={"trace_methods": True, "hook_crypto": True},
-                estimated_time="20-40 min"
-            ))
-            recommended_tools.add('frida')
+        # Inyección dinámica si hay RASP o no hay root
+        if not getattr(apk_info, 'root_available', True) and apk_info.has_native_libs:
+            considerations.append("No root available and native libs detected. Scheduling Frida Gadget Injection for RASP evasion.")
+            tasks.append(AnalysisTask(tool="frida_gadget", description="Inject Frida Gadget dynamically", priority=3, parameters={"mode": "wait"}))
+            recommended_tools.add('frida_gadget')
         
         # Ordenar tareas por prioridad
         tasks.sort(key=lambda t: t.priority)
